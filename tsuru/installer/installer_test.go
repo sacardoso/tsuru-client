@@ -81,3 +81,16 @@ func (s *S) TestProvisionPool(c *check.C) {
 		}
 	}
 }
+
+func (s *S) TestCreateLoadBalancer(c *check.C) {
+	fp := &FakeMachineProvisioner{}
+	machines, err := ProvisionMachines(fp, 2, nil)
+	c.Assert(err, check.IsNil)
+	_, err = ProvisionLoadBalancer("fake", machines)
+	c.Assert(err, check.NotNil)
+	c.Assert(err, check.Equals, errDriverNotSupportLB)
+	addr, err := ProvisionLoadBalancer("amazonec2", machines)
+	c.Assert(err, check.IsNil)
+	c.Assert(addr, check.Equals, "lb.test.com")
+
+}

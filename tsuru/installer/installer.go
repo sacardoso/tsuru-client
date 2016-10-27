@@ -5,11 +5,17 @@
 package installer
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/tsuru/config"
 	"github.com/tsuru/tsuru-client/tsuru/installer/dm"
 	"github.com/tsuru/tsuru/cmd"
 	"github.com/tsuru/tsuru/iaas/dockermachine"
@@ -24,6 +30,7 @@ var (
 		DedicatedAppsHosts:  false,
 		CoreDriversOpts:     make(map[string][]interface{}),
 	}
+	errDriverNotSupportLB = errors.New("Driver not support load balancer creation.")
 )
 
 type InstallOpts struct {
@@ -54,6 +61,10 @@ func (i *Installer) Install(opts *InstallOpts) (*Installation, error) {
 	coreMachines, err := i.ProvisionMachines(opts.CoreHosts, opts.CoreDriversOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to provision components machines: %s", err)
+	}
+	_, err = ProvisionLoadBalancer(opts.DriverName, coreMachines)
+	if err != nil {
+		return nil, fmt.Errorf("failed to provision load balancer: %s", err)
 	}
 	cluster, err := i.clusterCreator(coreMachines)
 	if err != nil {
@@ -198,6 +209,30 @@ func (i *Installer) ProvisionMachines(numMachines int, configs map[string][]inte
 		machines = append(machines, m)
 	}
 	return machines, nil
+}
+
+func ProvisionLoadBalancer(driver string, machines []*dm.Machine) (string, error) {
+	switch driver {
+	case "amazonec2":
+		conf := createAWSConf()
+		session := session.New(conf)
+		elb := elb.New(session)
+		return "", errors.New("not implemented")
+	default:
+		return "", errDriverNotSupportLB
+	}
+	return "", nil
+}
+
+func createAWSConf() *aws.Config {
+	conf := aws.NewConfig()
+	accessKey, _ := config.GetString("driver:options:amazonec2-access-key")
+	secretKey, _ := config.GetString("driver:options:amazonec2-secret-key")
+	sessionToken, _ := config.GetString("driver:options:amazonec2-session-token")
+	credentials := credentials.NewStaticCredentials(accessKey, secretKey, sessionToken)
+	conf = conf.WithCredentials(credentials)
+	region, _ := config.GetString("driver:options:amazonec2-region")
+	return conf.WithRegion(region)
 }
 
 type Installation struct {
