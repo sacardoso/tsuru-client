@@ -5,6 +5,7 @@
 package installer
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elb"
-	"github.com/tsuru/config"
+	"github.com/docker/machine/drivers/amazonec2"
 	"github.com/tsuru/tsuru-client/tsuru/installer/dm"
 	"github.com/tsuru/tsuru/cmd"
 	"github.com/tsuru/tsuru/iaas/dockermachine"
@@ -211,28 +212,60 @@ func (i *Installer) ProvisionMachines(numMachines int, configs map[string][]inte
 	return machines, nil
 }
 
-func ProvisionLoadBalancer(driver string, machines []*dm.Machine) (string, error) {
-	switch driver {
+func ProvisionLoadBalancer(driverName string, machines []*dockermachine.Machine) (string, error) {
+	println(driverName)
+	switch driverName {
 	case "amazonec2":
-		conf := createAWSConf()
+		driver := machines[0].Base.CustomData
+		if driver == nil {
+			return "", errors.New("Host machine has no driver.")
+		}
+		dbyte, err := json.Marshal(driver)
+		if err != nil {
+			return "", err
+		}
+		var d amazonec2.Driver
+		err = json.Unmarshal(dbyte, &d)
+		if err != nil {
+
+			return "", errors.New(fmt.Sprintf("driver %#v cannot be casted to amazonec2 driver.", driver))
+		}
+		lbName := "installer"
+		lbProtocol := "HTTP"
+		lbPort := int64(5000)
+		conf := createAWSConf(&d)
 		session := session.New(conf)
-		elb := elb.New(session)
-		return "", errors.New("not implemented")
+		lb := elb.New(session)
+		input := elb.CreateLoadBalancerInput{
+			AvailabilityZones: []*string{&d.Zone},
+			Listeners: []*elb.Listener{
+				&elb.Listener{
+					InstancePort:     &lbPort,
+					InstanceProtocol: &lbProtocol,
+					LoadBalancerPort: &lbPort,
+					Protocol:         &lbProtocol,
+				},
+			},
+			LoadBalancerName: &lbName,
+			SecurityGroups:   []*string{&d.SecurityGroupId},
+			Subnets:          []*string{&d.SubnetId},
+		}
+		output, err := lb.CreateLoadBalancer(&input)
+		if err != nil {
+			return "", err
+		}
+		return *output.DNSName, nil
 	default:
 		return "", errDriverNotSupportLB
 	}
 	return "", nil
 }
 
-func createAWSConf() *aws.Config {
+func createAWSConf(d *amazonec2.Driver) *aws.Config {
 	conf := aws.NewConfig()
-	accessKey, _ := config.GetString("driver:options:amazonec2-access-key")
-	secretKey, _ := config.GetString("driver:options:amazonec2-secret-key")
-	sessionToken, _ := config.GetString("driver:options:amazonec2-session-token")
-	credentials := credentials.NewStaticCredentials(accessKey, secretKey, sessionToken)
+	credentials := credentials.NewStaticCredentials(d.AccessKey, d.SecretKey, d.SessionToken)
 	conf = conf.WithCredentials(credentials)
-	region, _ := config.GetString("driver:options:amazonec2-region")
-	return conf.WithRegion(region)
+	return conf.WithRegion(d.Region)
 }
 
 type Installation struct {

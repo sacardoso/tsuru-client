@@ -84,7 +84,9 @@ func (s *S) TestProvisionPool(c *check.C) {
 
 func (s *S) TestCreateLoadBalancer(c *check.C) {
 	fp := &FakeMachineProvisioner{}
-	machines, err := ProvisionMachines(fp, 2, nil)
+	machine, err := fp.ProvisionMachine(nil)
+	machine2, err := fp.ProvisionMachine(nil)
+	machines := []*dockermachine.Machine{machine, machine2}
 	c.Assert(err, check.IsNil)
 	_, err = ProvisionLoadBalancer("fake", machines)
 	c.Assert(err, check.NotNil)
