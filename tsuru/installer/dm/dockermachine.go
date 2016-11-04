@@ -91,6 +91,11 @@ func (d *DockerMachine) CreateMachine(driverOpts map[string]interface{}) (*docke
 	driverOpts["swarm-host"] = ""
 	driverOpts["engine-install-url"] = ""
 	driverOpts["swarm-discovery"] = ""
+	lb := "registry"
+	if _, ok := driverOpts["lb-addr"]; ok {
+		lb = driverOpts["lb-addr"].(string)
+	}
+	delete(driverOpts, "lb-addr")
 	mergedOpts := make(map[string]interface{})
 	for k, v := range d.globalDriverOpts {
 		mergedOpts[k] = v
@@ -99,10 +104,11 @@ func (d *DockerMachine) CreateMachine(driverOpts map[string]interface{}) (*docke
 		mergedOpts[k] = v
 	}
 	m, err := d.API.CreateMachine(dockermachine.CreateMachineOpts{
-		Name:           d.generateMachineName(),
-		DriverName:     d.driverName,
-		Params:         mergedOpts,
-		RegistryMirror: d.dockerHubMirror,
+		Name:             d.generateMachineName(),
+		DriverName:       d.driverName,
+		Params:           mergedOpts,
+		RegistryMirror:   d.dockerHubMirror,
+		InsecureRegistry: fmt.Sprintf("%s:5000", lb),
 	})
 	if err != nil {
 		return nil, err
