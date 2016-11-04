@@ -51,6 +51,7 @@ type Installer struct {
 	components         []TsuruComponent
 	bootstraper        Bootstraper
 	clusterCreator     func([]*dockermachine.Machine) (ServiceCluster, error)
+	LBAddr             string
 }
 
 func (i *Installer) Install(opts *InstallOpts) (*Installation, error) {
@@ -63,7 +64,7 @@ func (i *Installer) Install(opts *InstallOpts) (*Installation, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to provision components machines: %s", err)
 	}
-	_, err = ProvisionLoadBalancer(opts.DriverName, coreMachines)
+	err = i.ProvisionLoadBalancer(opts.DriverName, coreMachines, opts.ComponentsConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to provision load balancer: %s", err)
 	}
@@ -90,12 +91,15 @@ func (i *Installer) Install(opts *InstallOpts) (*Installation, error) {
 
 func (i *Installer) InstallComponents(cluster ServiceCluster, opts *ComponentsConfig) error {
 	for _, component := range i.components {
-		fmt.Fprintf(i.outWriter, "Installing %s\n", component.Name())
+		fmt.Fprintf(i.outWriter, "Installing %s\n", component.DisplayName())
 		errInstall := component.Install(cluster, opts)
 		if errInstall != nil {
-			return fmt.Errorf("error installing %s: %s", component.Name(), errInstall)
+			return fmt.Errorf("error installing %s: %s", component.DisplayName(), errInstall)
 		}
-		fmt.Fprintf(i.outWriter, "%s successfully installed!\n", component.Name())
+		fmt.Fprintf(i.outWriter, "%s successfully installed!\n", component.DisplayName())
+		if c, ok := component.(ExposableComponent); ok {
+			opts.ComponentAddress[component.Name()] = fmt.Sprintf("%s:%d", i.LBAddr, c.LBPort())
+		}
 	}
 	return nil
 }
@@ -212,60 +216,98 @@ func (i *Installer) ProvisionMachines(numMachines int, configs map[string][]inte
 	return machines, nil
 }
 
-func ProvisionLoadBalancer(driverName string, machines []*dockermachine.Machine) (string, error) {
-	println(driverName)
+func (i *Installer) ProvisionLoadBalancer(driverName string, machines []*dockermachine.Machine, opts *ComponentsConfig) error {
 	switch driverName {
 	case "amazonec2":
 		driver := machines[0].Base.CustomData
 		if driver == nil {
-			return "", errors.New("Host machine has no driver.")
+			return errors.New("Host machine has no driver.")
 		}
 		dbyte, err := json.Marshal(driver)
 		if err != nil {
-			return "", err
+			return err
 		}
 		var d amazonec2.Driver
 		err = json.Unmarshal(dbyte, &d)
 		if err != nil {
-
-			return "", errors.New(fmt.Sprintf("driver %#v cannot be casted to amazonec2 driver.", driver))
+			return errors.New(fmt.Sprintf("driver %#v cannot be casted to amazonec2 driver. error: %v", driver, err))
 		}
 		lbName := "installer"
-		lbProtocol := "HTTP"
-		lbPort := int64(5000)
-		conf := createAWSConf(&d)
+		conf := aws.NewConfig()
+		credentials := credentials.NewStaticCredentials(d.AccessKey, d.SecretKey, d.SessionToken)
+		conf = conf.WithCredentials(credentials)
+		conf = conf.WithRegion(d.Region)
 		session := session.New(conf)
 		lb := elb.New(session)
+		protocol := "HTTP"
+		port := int64(5000)
 		input := elb.CreateLoadBalancerInput{
-			AvailabilityZones: []*string{&d.Zone},
-			Listeners: []*elb.Listener{
-				&elb.Listener{
-					InstancePort:     &lbPort,
-					InstanceProtocol: &lbProtocol,
-					LoadBalancerPort: &lbPort,
-					Protocol:         &lbProtocol,
-				},
-			},
+			Listeners: []*elb.Listener{{
+				InstanceProtocol: &protocol,
+				InstancePort:     &port,
+				LoadBalancerPort: &port,
+				Protocol:         &protocol,
+			}},
 			LoadBalancerName: &lbName,
 			SecurityGroups:   []*string{&d.SecurityGroupId},
 			Subnets:          []*string{&d.SubnetId},
 		}
 		output, err := lb.CreateLoadBalancer(&input)
 		if err != nil {
-			return "", err
+			return err
 		}
-		return *output.DNSName, nil
+		i.LBAddr = *output.DNSName
+		instances := []*elb.Instance{}
+		for _, m := range machines {
+			driver := m.Base.CustomData
+			if driver == nil {
+				return errors.New("Host machine has no driver.")
+			}
+			dbyte, err := json.Marshal(driver)
+			if err != nil {
+				return err
+			}
+			var d amazonec2.Driver
+			err = json.Unmarshal(dbyte, &d)
+			if err != nil {
+				return errors.New(fmt.Sprintf("driver %#v cannot be casted to amazonec2 driver. error: %v", driver, err))
+			}
+			instance := elb.Instance{InstanceId: &d.InstanceId}
+			instances = append(instances, &instance)
+		}
+		registerInput := elb.RegisterInstancesWithLoadBalancerInput{
+			LoadBalancerName: &lbName,
+			Instances:        instances,
+		}
+		_, err = lb.RegisterInstancesWithLoadBalancer(&registerInput)
+		if err != nil {
+			return err
+		}
+		listeners := []*elb.Listener{}
+		for _, component := range i.components {
+			if c, ok := component.(ExposableComponent); ok {
+				port := int64(c.LBPort())
+				listener := elb.Listener{
+					InstancePort:     &port,
+					InstanceProtocol: &protocol,
+					LoadBalancerPort: &port,
+					Protocol:         &protocol,
+				}
+				listeners = append(listeners, &listener)
+			}
+		}
+		lbInput := elb.CreateLoadBalancerListenersInput{
+			Listeners:        listeners,
+			LoadBalancerName: &lbName,
+		}
+		_, err = lb.CreateLoadBalancerListeners(&lbInput)
+		if err != nil {
+			return err
+		}
+		return nil
 	default:
-		return "", errDriverNotSupportLB
+		return errDriverNotSupportLB
 	}
-	return "", nil
-}
-
-func createAWSConf(d *amazonec2.Driver) *aws.Config {
-	conf := aws.NewConfig()
-	credentials := credentials.NewStaticCredentials(d.AccessKey, d.SecretKey, d.SessionToken)
-	conf = conf.WithCredentials(credentials)
-	return conf.WithRegion(d.Region)
 }
 
 type Installation struct {

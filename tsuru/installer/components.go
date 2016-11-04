@@ -73,14 +73,22 @@ func NewInstallConfig(targetName string) *ComponentsConfig {
 
 type TsuruComponent interface {
 	Name() string
+	DisplayName() string
 	Install(ServiceCluster, *ComponentsConfig) error
 	Status(ServiceCluster) (*ServiceInfo, error)
 	Healthcheck(string) error
 }
 
+type ExposableComponent interface {
+	LBPort() int
+}
 type MongoDB struct{}
 
 func (c *MongoDB) Name() string {
+	return "mongo"
+}
+
+func (c *MongoDB) DisplayName() string {
 	return "MongoDB"
 }
 
@@ -122,6 +130,10 @@ func (c *MongoDB) Healthcheck(addr string) error {
 type PlanB struct{}
 
 func (c *PlanB) Name() string {
+	return "planb"
+}
+
+func (c *PlanB) DisplayName() string {
 	return "PlanB"
 }
 
@@ -179,9 +191,17 @@ func (c *PlanB) Healthcheck(addr string) error {
 	return nil
 }
 
+func (c *PlanB) LBPort() int {
+	return 80
+}
+
 type Redis struct{}
 
 func (c *Redis) Name() string {
+	return "redis"
+}
+
+func (c *Redis) DisplayName() string {
 	return "Redis"
 }
 
@@ -223,6 +243,9 @@ func (c *Redis) Healthcheck(addr string) error {
 type Registry struct{}
 
 func (c *Registry) Name() string {
+	return "registry"
+}
+func (c *Registry) DisplayName() string {
 	return "Docker Registry"
 }
 
@@ -293,6 +316,10 @@ func (c *Registry) Healthcheck(addr string) error {
 	return nil
 }
 
+func (c *Registry) LBPort() int {
+	return 5000
+}
+
 type TsuruAPI struct{}
 
 type TsuruAPIConfig struct {
@@ -304,6 +331,10 @@ type TsuruAPIConfig struct {
 }
 
 func (c *TsuruAPI) Name() string {
+	return "tsuruapi"
+}
+
+func (c *TsuruAPI) DisplayName() string {
 	return "Tsuru API"
 }
 
@@ -388,6 +419,10 @@ func (c *TsuruAPI) Status(cluster ServiceCluster) (*ServiceInfo, error) {
 
 func (c *TsuruAPI) Healthcheck(addr string) error {
 	return nil
+}
+
+func (c *TsuruAPI) LBPort() int {
+	return 8080
 }
 
 func (c *TsuruAPI) setupRootUser(cluster ServiceCluster, email, password string) error {
