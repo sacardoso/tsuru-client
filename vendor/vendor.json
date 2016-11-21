@@ -261,6 +261,12 @@
 			"revisionTime": "2016-10-25T21:42:20Z"
 		},
 		{
+			"checksumSHA1": "CdJIYVJNMVXnxu2rUJ+xGz7y/n0=",
+			"path": "github.com/aws/aws-sdk-go/service/iam",
+			"revision": "8a2306a0e7d8d4095e5f1beee530ceaee6e7d609",
+			"revisionTime": "2016-10-25T21:42:20Z"
+		},
+		{
 			"checksumSHA1": "eOOeajRwz6FG6QF+F4LQvbm3Ilk=",
 			"path": "github.com/aws/aws-sdk-go/service/sts",
 			"revision": "8a2306a0e7d8d4095e5f1beee530ceaee6e7d609",
