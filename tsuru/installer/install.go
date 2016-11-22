@@ -6,12 +6,19 @@ package installer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net/http"
 	"net/url"
 	"strings"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/iam"
+	"github.com/docker/machine/drivers/amazonec2"
 	"github.com/tsuru/config"
 	"github.com/tsuru/gnuflag"
 	"github.com/tsuru/tsuru-client/tsuru/admin"
@@ -295,6 +302,41 @@ func (c *Uninstall) Run(ctx *cmd.Context, cli *cmd.Client) error {
 	}
 	if !c.Confirm(ctx, fmt.Sprint("Are you really sure? I wont ask you again.")) {
 		return nil
+	}
+	if len(machines) > 0 {
+		driver := machines[0].Base.CustomData
+		if driver == nil {
+			return errors.New("Host machine has no driver.")
+		}
+		dbyte, err := json.Marshal(driver)
+		if err != nil {
+			return err
+		}
+		var d amazonec2.Driver
+		err = json.Unmarshal(dbyte, &d)
+		if err != nil {
+			return errors.New(fmt.Sprintf("driver %#v cannot be casted to amazonec2 driver. error: %v", driver, err))
+		}
+		conf := aws.NewConfig()
+		credentials := credentials.NewStaticCredentials(d.AccessKey, d.SecretKey, d.SessionToken)
+		conf = conf.WithCredentials(credentials)
+		conf = conf.WithRegion(d.Region)
+		s, err := session.NewSession(conf)
+		if err != nil {
+			return err
+		}
+		lb := elb.New(s)
+		lbName := "installer"
+		delLBInput := elb.DeleteLoadBalancerInput{
+			LoadBalancerName: &lbName,
+		}
+		lb.DeleteLoadBalancer(&delLBInput)
+		i := iam.New(s)
+		certName := "registry-lb-tsuru"
+		delCertInput := iam.DeleteServerCertificateInput{
+			ServerCertificateName: &certName,
+		}
+		i.DeleteServerCertificate(&delCertInput)
 	}
 	destroyMachineCmd := admin.MachineDestroy{}
 	destroyCtx := &cmd.Context{Stdout: ctx.Stdout, Stderr: ctx.Stderr}
