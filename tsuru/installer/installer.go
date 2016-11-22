@@ -11,14 +11,17 @@ import (
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/elb"
+	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/docker/machine/drivers/amazonec2"
 	"github.com/tsuru/config"
 	"github.com/tsuru/tsuru-client/tsuru/installer/dm"
+	"github.com/tsuru/tsuru-client/tsuru/installer/testing"
 	"github.com/tsuru/tsuru/cmd"
 	"github.com/tsuru/tsuru/iaas/dockermachine"
 )
@@ -70,6 +73,10 @@ func (i *Installer) Install(opts *InstallOpts) (*Installation, error) {
 	coreMachines, err := i.ProvisionMachines(opts.CoreHosts, opts.CoreDriversOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to provision components machines: %s", err)
+	}
+	err = i.SetupRegistryInLB(opts.DriverName, coreMachines[0].Host.HostOptions.AuthOptions.CertDir)
+	if err != nil {
+		return nil, err
 	}
 	err = i.AddMachinesToLB(coreMachines)
 	if err != nil {
@@ -238,13 +245,16 @@ func (i *Installer) ProvisionLoadBalancer(driverName string, opts *ComponentsCon
 		credentials := credentials.NewStaticCredentials(accessKey, secretKey, "")
 		conf = conf.WithCredentials(credentials)
 		conf = conf.WithRegion(region)
-		session := session.New(conf)
-		lb := elb.New(session)
+		s := session.New(conf)
+		lb := elb.New(s)
 		protocol := "HTTP"
 		listeners := []*elb.Listener{}
 		for _, component := range i.components {
 			if c, ok := component.(ExposableComponent); ok {
 				port := int64(c.LBPort())
+				if component.Name() == "registry" {
+					continue
+				}
 				listener := elb.Listener{
 					InstancePort:     &port,
 					InstanceProtocol: &protocol,
@@ -277,6 +287,65 @@ func (i *Installer) ProvisionLoadBalancer(driverName string, opts *ComponentsCon
 	}
 }
 
+func (i *Installer) SetupRegistryInLB(driverName, caDirPath string) error {
+	switch driverName {
+	case "amazonec2":
+		accessKey, _ := config.GetString("driver:options:amazonec2-access-key")
+		secretKey, _ := config.GetString("driver:options:amazonec2-secret-key")
+		region, _ := config.GetString("driver:options:amazonec2-region")
+		if region == "" {
+			region = defaultAWSRegion
+		}
+		conf := aws.NewConfig()
+		credentials := credentials.NewStaticCredentials(accessKey, secretKey, "")
+		conf = conf.WithCredentials(credentials)
+		conf = conf.WithRegion(region)
+		s, err := session.NewSession(conf)
+		if err != nil {
+			return err
+		}
+		im := iam.New(s)
+		// Create new certs using caPath
+		cert, err := installertest.CreateCertSignedBy(i.LBAddr, caDirPath)
+		if err != nil {
+			return err
+		}
+		// Upload new cert to amazonec2
+		arnPath := "/installer/registry/"
+		certName := "registry-lb-tsuru"
+		uploadInput := iam.UploadServerCertificateInput{
+			CertificateBody:       &cert.Body,
+			Path:                  &arnPath,
+			PrivateKey:            &cert.PrivateKey,
+			ServerCertificateName: &certName,
+		}
+		certsOutput, err := im.UploadServerCertificate(&uploadInput)
+		if err != nil {
+			return err
+		}
+		time.Sleep(60 * time.Second)
+		// Update registry listener
+		lb := elb.New(s)
+		port := int64(5000)
+		protocol := "HTTPS"
+		listener := elb.Listener{
+			InstanceProtocol: &protocol,
+			InstancePort:     &port,
+			Protocol:         &protocol,
+			LoadBalancerPort: &port,
+			SSLCertificateId: certsOutput.ServerCertificateMetadata.Arn,
+		}
+		listenerInput := elb.CreateLoadBalancerListenersInput{
+			Listeners:        []*elb.Listener{&listener},
+			LoadBalancerName: &i.LBName,
+		}
+		_, err = lb.CreateLoadBalancerListeners(&listenerInput)
+		return err
+	default:
+		return errDriverNotSupportLB
+	}
+}
+
 func (i *Installer) AddMachinesToLB(machines []*dockermachine.Machine) error {
 	driver := machines[0].Base.CustomData
 	if driver == nil {
@@ -295,8 +364,11 @@ func (i *Installer) AddMachinesToLB(machines []*dockermachine.Machine) error {
 	credentials := credentials.NewStaticCredentials(d.AccessKey, d.SecretKey, d.SessionToken)
 	conf = conf.WithCredentials(credentials)
 	conf = conf.WithRegion(d.Region)
-	session := session.New(conf)
-	lb := elb.New(session)
+	s, err := session.NewSession(conf)
+	if err != nil {
+		return err
+	}
+	lb := elb.New(s)
 	sgInput := elb.ApplySecurityGroupsToLoadBalancerInput{
 		LoadBalancerName: &i.LBName,
 		SecurityGroups:   []*string{&d.SecurityGroupId},
