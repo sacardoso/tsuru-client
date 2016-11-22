@@ -53,6 +53,64 @@ func CreateCert(template, parent *x509.Certificate, pub interface{}, parentPriva
 	return
 }
 
+type Cert struct {
+	Body       string
+	PrivateKey string
+}
+
+func CreateCertSignedBy(addr, caDirPath string) (Cert, error) {
+	var c Cert
+	ca, err := loadCA(caDirPath)
+	if err != nil {
+		return c, err
+	}
+	caKey, err := loadCAKey(caDirPath)
+	if err != nil {
+		return c, err
+	}
+	certKey, err := GenerateKeyPair()
+	if err != nil {
+		return c, err
+	}
+	certTmpl, err := CertTemplateGenerator()
+	if err != nil {
+		return c, err
+	}
+	certTmpl.KeyUsage = x509.KeyUsageDigitalSignature
+	certTmpl.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
+	certTmpl.DNSNames = []string{addr}
+	_, certPEM, err := CreateCert(certTmpl, ca, &certKey.PublicKey, caKey)
+	if err != nil {
+		return c, err
+	}
+	certKeyPEM := pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(certKey),
+	})
+	c.Body = string(certPEM)
+	c.PrivateKey = string(certKeyPEM)
+	return c, nil
+}
+
+func loadCA(caDirPath string) (*x509.Certificate, error) {
+	absPath := filepath.Join(caDirPath, "ca.pem")
+	f, err := ioutil.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+	data, _ := pem.Decode(f)
+	return x509.ParseCertificate(data.Bytes)
+}
+
+func loadCAKey(caDirPath string) (*rsa.PrivateKey, error) {
+	absPath := filepath.Join(caDirPath, "ca-key.pem")
+	f, err := ioutil.ReadFile(absPath)
+	if err != nil {
+		return nil, err
+	}
+	data, _ := pem.Decode(f)
+	return x509.ParsePKCS1PrivateKey(data.Bytes)
+}
+
 type CertsPath struct {
 	ClientCert string
 	ClientKey  string
